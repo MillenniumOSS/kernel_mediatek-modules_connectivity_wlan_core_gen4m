@@ -1281,30 +1281,6 @@ struct SCAN_SCHED_SSID_MATCH_SETS {
 	uint8_t    aucPadding_1[3];
 };
 
-struct CMD_SCAN_SCHED_REQ {
-	uint8_t    ucVersion;
-	uint8_t    ucSeqNum;
-	/*    Fw SCHED SCAN DONE after stop    */
-	uint8_t    fgStopAfterIndication;
-	uint8_t    ucSsidNum;
-	uint8_t    ucMatchSsidNum;
-	uint8_t    aucPadding_0;
-	uint16_t  u2IELen;
-	/*    Send prob request SSID set    */
-	struct PARAM_SSID    auSsid[10];
-	/*    Match SSID set    */
-	struct SCAN_SCHED_SSID_MATCH_SETS    auMatchSsid[16];
-	uint8_t ucChannelType;
-	uint8_t ucChnlNum;
-	uint8_t ucMspEntryNum;
-	uint8_t ScnFuncMask;
-	struct CHANNEL_INFO aucChannel[64];
-	/*    SCHED SCN Interval    */
-	uint16_t au2MspList[10];
-	uint8_t aucPadding_3[64];
-	uint8_t aucIE[0];
-};
-
 enum WIFI_SCAN_EVENT {
 	WIFI_SCAN_BUFFER_FULL = 0,
 	WIFI_SCAN_COMPLETE,
@@ -1375,6 +1351,20 @@ struct CMD_MDDP_FILTER_RULE {
 	uint8_t  ucPfNum;
 	uint8_t  aucPadding1[2];
 	uint8_t  aucWhPfClsFilterMddp[0];
+};
+
+struct CMD_MONITOR_SET_INFO {
+	uint8_t  ucEnable;
+	uint8_t  ucBand;
+	uint8_t  ucPriChannel;
+	uint8_t  ucSco;
+	uint8_t  ucChannelWidth;
+	uint8_t  ucChannelS1;
+	uint8_t  ucChannelS2;
+	uint8_t  ucBandIdx;
+	uint16_t u2Aid;
+	uint8_t  fgDropFcsErrorFrame;
+	uint8_t  aucResv[5];
 };
 
 /*---------------------------------------------------------------------------*/

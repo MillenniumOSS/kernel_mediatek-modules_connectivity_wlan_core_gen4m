@@ -1417,6 +1417,13 @@ scnFsmSchedScanRequest(IN struct ADAPTER *prAdapter,
 
 	prSchedScanCmd->ucScnFuncMask |= prRequest->ucScnFuncMask;
 
+	if (kalIsValidMacAddr(prRequest->aucRandomMac)) {
+		prSchedScanCmd->ucScnFuncMask |=
+			(ENUM_SCN_RANDOM_MAC_EN | ENUM_SCN_RANDOM_SN_EN);
+		kalMemCopy(prSchedScanCmd->aucRandomMac,
+			prRequest->aucRandomMac, MAC_ADDR_LEN);
+	}
+
 	scnSetSchedScanPlan(prAdapter, prSchedScanCmd);
 
 	log_dbg(SCN, INFO, "V(%u)seq(%u)sz(%zu)chT(%u)chN(%u)ssid(%u)match(%u)IE(%u=>%u)MSP(%u)Func(0x%X)\n",
@@ -1463,18 +1470,23 @@ scnFsmSchedScanRequest(IN struct ADAPTER *prAdapter,
 u_int8_t scnFsmSchedScanStopRequest(IN struct ADAPTER *prAdapter)
 {
 	uint8_t ucBssIndex = 0;
+	struct BSS_INFO *prAisBssInfo;
 
 	ASSERT(prAdapter);
 
 	ucBssIndex =
 		prAdapter->rWifiVar.rScanInfo.rSchedScanParam.ucBssIndex;
-
-	if (aisGetAisBssInfo(prAdapter,
-		ucBssIndex) == NULL) {
-		log_dbg(SCN, WARN,
-			"prAisBssInfo%d is NULL\n",
-			ucBssIndex);
+	prAisBssInfo = aisGetAisBssInfo(prAdapter, ucBssIndex);
+	if (prAisBssInfo == NULL) {
+		log_dbg(SCN, WARN, "prAisBssInfo is NULL\n");
 		return FALSE;
+	}
+
+	if (prAisBssInfo->eConnectionState == MEDIA_STATE_DISCONNECTED &&
+		IS_NET_ACTIVE(prAdapter, prAisBssInfo->ucBssIndex)) {
+		UNSET_NET_ACTIVE(prAdapter, prAisBssInfo->ucBssIndex);
+		/* sync with firmware */
+		nicDeactivateNetwork(prAdapter,	prAisBssInfo->ucBssIndex);
 	}
 
 	if (!scnFsmSchedScanSetAction(prAdapter, SCHED_SCAN_ACT_DISABLE)) {

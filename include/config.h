@@ -517,6 +517,15 @@
 /* TODO: it should be 4096 under emulation mode */
 #define CFG_RX_MAX_PKT_SIZE	(28 + 2312 + 12 /*HIF_RX_HEADER_T*/)
 
+#define CFG_SUPPORT_SNIFFER_RADIOTAP_13K	0
+#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
+#define CFG_RADIOTAP_HEADROOM	72
+#endif
+#if CFG_SUPPORT_SNIFFER_RADIOTAP_13K
+#define CFG_RX_MAX_MPDU_SIZE	13312 /* support amsdu 7 */
+#else
+#define CFG_RX_MAX_MPDU_SIZE	CFG_RX_MAX_PKT_SIZE
+#endif
 /*! Minimum RX packet size, if lower than this value, drop incoming packet */
 #define CFG_RX_MIN_PKT_SIZE	10 /*!< 802.11 Control Frame is 10 bytes */
 
@@ -748,6 +757,10 @@
 #define CFG_P2P_DEFAULT_CLIENT_COUNT 0
 #endif
 
+#ifndef CFG_P2P_FORCE_ROC_CSA
+#define CFG_P2P_FORCE_ROC_CSA 1
+#endif
+
 /*------------------------------------------------------------------------------
  * Flags for GTK rekey offload
  *------------------------------------------------------------------------------
@@ -936,7 +949,7 @@
 
 #define CFG_SUPPORT_P2P_RSSI_QUERY		0
 
-#define CFG_SUPPORT_RSSI_DISCONNECT    1
+#define CFG_SUPPORT_RSSI_DISCONNECT		1
 
 #define CFG_SUPPORT_P2P_GO_OFFLOAD_PROBE_RSP	0
 
@@ -946,8 +959,8 @@
 #define CFG_SHOW_FULL_MACADDR     1
 #define CFG_SHOW_FULL_IPADDR			1
 #else
-#define CFG_SHOW_FULL_MACADDR     0
-#define CFG_SHOW_FULL_IPADDR			0
+#define CFG_SHOW_FULL_MACADDR     1      /*IKSWT-168467 */
+#define CFG_SHOW_FULL_IPADDR			1      /*IKSWT-168467 */
 #endif
 
 #ifndef CFG_SUPPORT_VO_ENTERPRISE
@@ -989,8 +1002,8 @@
 #define CFG_SUPPORT_802_11V_BSS_TRANSITION_MGT  0
 #endif
 
-#if (CFG_SUPPORT_802_11V_BSS_TRANSITION_MGT == 1) && (CFG_TC10_FEATURE == 1)
-#define CFG_SUPPORT_802_11V_BTM_OFFLOAD 1
+#if (CFG_SUPPORT_802_11V_BSS_TRANSITION_MGT == 1)
+#define CFG_SUPPORT_802_11V_BTM_OFFLOAD 0
 #else
 #define CFG_SUPPORT_802_11V_BTM_OFFLOAD 0
 #endif
@@ -1156,12 +1169,6 @@
  *------------------------------------------------------------------------------
  */
 #define CFG_SUPPORT_SCAN_RANDOM_MAC        (1)
-
-/*------------------------------------------------------------------------------
- * Flags of Sniffer SUPPORT
- *------------------------------------------------------------------------------
- */
-#define CFG_SUPPORT_SNIFFER                 1
 
 #define WLAN_INCLUDE_PROC                   1
 
@@ -1548,7 +1555,11 @@
  *       COUNTRY_CHANNEL_TXPOWER_LIMIT_TYPE_COMP_11AC_V2
  *------------------------------------------------------------------------------
  */
+#ifdef MOTO_MT6855_DEVONN
+#define CFG_SUPPORT_DYNA_TX_PWR_CTRL_11AC_V2_SETTING 1
+#else
 #define CFG_SUPPORT_DYNA_TX_PWR_CTRL_11AC_V2_SETTING 0
+#endif
 
 /*------------------------------------------------------------------------------
  * tx power control:

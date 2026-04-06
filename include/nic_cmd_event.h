@@ -2676,11 +2676,13 @@ struct CMD_SCHED_SCAN_REQ {
 	struct CHANNEL_INFO aucChannel[64];
 	uint16_t au2MspList[10];
 	uint8_t ucBssIndex;
+	uint8_t aucPadding_4[3];
 	uint32_t u4DelayStartInSec;
 	uint32_t u4FastScanIteration;
 	uint32_t u4FastScanPeriod;
 	uint32_t u4SlowScanPeriod;
-	uint8_t aucPadding_3[47];
+	uint8_t aucRandomMac[MAC_ADDR_LEN];
+	uint8_t aucPadding_3[38];
 	/* keep last */
 	uint8_t aucIE[0];             /* MUST be the last for IE content */
 };
@@ -2843,19 +2845,6 @@ struct EVENT_LTE_SAFE_CHN {
 	uint32_t u4Flags;	/* Bit0: valid */
 	struct LTE_SAFE_CHN_INFO rLteSafeChn;
 };
-
-#if CFG_SUPPORT_SNIFFER
-struct CMD_MONITOR_SET_INFO {
-	uint8_t ucEnable;
-	uint8_t ucBand;
-	uint8_t ucPriChannel;
-	uint8_t ucSco;
-	uint8_t ucChannelWidth;
-	uint8_t ucChannelS1;
-	uint8_t ucChannelS2;
-	uint8_t aucResv[9];
-};
-#endif
 
 struct EVENT_WIFI_RDD_TEST {
 	uint32_t u4FuncIndex;

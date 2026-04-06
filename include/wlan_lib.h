@@ -208,7 +208,7 @@
 #define WLAN_CFG_KEY_LEN_MAX	32	/* include \x00  EOL */
 #define WLAN_CFG_VALUE_LEN_MAX	128	/* include \x00 EOL */
 #define WLAN_CFG_FLAG_SKIP_CB	BIT(0)
-#define WLAN_CFG_FILE_BUF_SIZE	2048
+#define WLAN_CFG_FILE_BUF_SIZE	8192    //IKSWS-74676, set the value larger.
 
 #define WLAN_CFG_REC_ENTRY_NUM_MAX 400
 
@@ -268,6 +268,10 @@
 #else
 #define CFG_SUPPORT_RA_GEN			1
 #define CFG_SUPPORT_TXPOWER_INFO		1
+#endif
+
+#if (CFG_SUPPORT_TXPOWER_INFO == 1)
+#define TXPOWER_INFO_DEBUG 0
 #endif
 
 #if (CFG_SUPPORT_CONNAC2X == 1)

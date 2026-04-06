@@ -70,6 +70,9 @@
 #include "precomp.h"
 #include "mgmt/ais_fsm.h"
 #include "mddp.h"
+//Moto, read MACs from boot params
+#include <linux/of.h>
+#include <linux/of_address.h>
 
 /*******************************************************************************
  *                              C O N S T A N T S
@@ -1413,6 +1416,7 @@ uint32_t wlanAdapterStart(IN struct ADAPTER *prAdapter,
 			case WAIT_FIRMWARE_READY_FAIL:
 			case RAM_CODE_DOWNLOAD_FAIL:
 			case SET_CHIP_ECO_INFO_FAIL:
+				halHifSwInfoUnInit(prAdapter->prGlueInfo);
 			case INIT_HIFINFO_FAIL:
 				nicRxUninitialize(prAdapter);
 				nicTxRelease(prAdapter, FALSE);
@@ -3924,6 +3928,25 @@ void wlanoidClearTimeoutCheck(IN struct ADAPTER *prAdapter)
 	cnmTimerStopTimer(prAdapter, &(prAdapter->rOidTimeoutTimer));
 }
 
+#ifdef MOTO_UTAGS_MAC
+/* moto, reed wifi mac add from bootargs */
+#define MACSTRLEN 17
+extern int mmi_get_bootarg(char *key, char **value);
+extern void mmi_free_bootarg_res(void);
+
+static inline void strtomac(char * buf, unsigned char macaddr[6]) {
+        if (strchr(buf, ':'))
+                sscanf(buf, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                        &macaddr[0],&macaddr[1], &macaddr[2], &macaddr[3], &macaddr[4], &macaddr[5]);
+        else if (strchr(buf, '-'))
+                sscanf(buf, "%hhx-%hhx-%hhx-%hhx-%hhx-%hhx",
+                        &macaddr[0],&macaddr[1], &macaddr[2], &macaddr[3], &macaddr[4], &macaddr[5]);
+        else
+                DBGLOG(INIT, ERROR, "%s,Can not parse mac address: %s", __func__,buf);
+}
+#endif
+
+
 /*----------------------------------------------------------------------------*/
 /*!
  * @brief This function is called to override network address
@@ -3943,10 +3966,35 @@ uint32_t wlanUpdateNetworkAddress(IN struct ADAPTER
 	const uint8_t aucZeroMacAddr[] = NULL_MAC_ADDR;
 	uint8_t rMacAddr[PARAM_MAC_ADDR_LEN];
 	uint32_t u4SysTime;
+#ifdef MOTO_UTAGS_MAC
+	char *s;
+	char macStr[MACSTRLEN+1] ={0};
+	bool utagMac = FALSE;
+#endif
 
 	DEBUGFUNC("wlanUpdateNetworkAddress");
 
 	ASSERT(prAdapter);
+
+#ifdef MOTO_UTAGS_MAC
+        //Moto, read MACs from bootparams
+        if (mmi_get_bootarg("androidboot.wifimacaddr=", &s) == 0) {
+            DBGLOG(INIT, ERROR, "%s: get wlan MACs bootargs = %s \n", __func__, s);
+            memcpy(macStr, s, MACSTRLEN);
+            utagMac = TRUE;
+            mmi_free_bootarg_res();
+        }
+        else {
+            DBGLOG(INIT, ERROR, "%s: WIFI_MAC_BOOTARG not present in bootargs", __func__);
+        }
+
+        if (utagMac == TRUE) {
+#if CFG_SHOW_MACADDR_SOURCE
+                DBGLOG(INIT, INFO, " Using MAC from boot params=%s\n", macStr);
+#endif
+                strtomac(macStr,rMacAddr);
+        } else
+#endif
 
 	if (kalRetrieveNetworkAddress(prAdapter->prGlueInfo, rMacAddr) == FALSE
 	    || IS_BMCAST_MAC_ADDR(rMacAddr)
@@ -3965,9 +4013,9 @@ uint32_t wlanUpdateNetworkAddress(IN struct ADAPTER
 		/* dynamic generate */
 		u4SysTime = (uint32_t) kalGetTimeTick();
 
-		rMacAddr[0] = 0x00;
-		rMacAddr[1] = 0x08;
-		rMacAddr[2] = 0x22;
+		rMacAddr[0] = 0xF0;
+		rMacAddr[1] = 0xD7;
+		rMacAddr[2] = 0xAA;
 
 		kalMemCopy(&rMacAddr[3], &u4SysTime, 3);
 
@@ -5179,8 +5227,8 @@ uint32_t wlanGetMiniTxPower(IN struct ADAPTER *prAdapter,
 		return WLAN_STATUS_NOT_ACCEPTED;
 	}
 
-	startOfs = arRange[bandIdx][ePhyMode].startOfs;
-	endOfs = arRange[bandIdx][ePhyMode].endOfs;
+	startOfs = arRange[(uint8_t)bandIdx][(uint8_t)ePhyMode].startOfs;
+	endOfs = arRange[(uint8_t)bandIdx][(uint8_t)ePhyMode].endOfs;
 
 
 	/*NVRAM start addreess :0*/
@@ -8132,6 +8180,8 @@ void wlanInitFeatureOption(IN struct ADAPTER *prAdapter)
 			prAdapter, "GROFlushTimeout", 1);
 	prWifiVar->ucGROEnableTput = (uint32_t) wlanCfgGetUint32(
 			prAdapter, "GROEnableTput", 6250000);
+	prWifiVar->u4UdpEnableGroTputTh = (uint32_t) wlanCfgGetUint32(
+			prAdapter, "UdpEnableGroTputTh", 500000000);
 #endif
 	prWifiVar->ucMsduReportTimeout =
 		(uint8_t) wlanCfgGetUint32(prAdapter,
@@ -8186,7 +8236,7 @@ void wlanInitFeatureOption(IN struct ADAPTER *prAdapter)
 	prWifiVar->ucDftNdcStartOffset =
 		(uint8_t)wlanCfgGetUint32(prAdapter, "NanDftNdcStartOffset", 0);
 	prWifiVar->ucNanFixChnl =
-		(uint8_t)wlanCfgGetUint32(prAdapter, "NanFixChnl", 0);
+		(uint8_t)wlanCfgGetUint32(prAdapter, "NanFixChnl", 6);
 	prWifiVar->fgEnableNDPE =
 		wlanCfgGetUint32(prAdapter, "NanEnableNDPE", 1);
 	prWifiVar->u2DftNdlQosLatencyVal =
@@ -8244,7 +8294,7 @@ void wlanInitFeatureOption(IN struct ADAPTER *prAdapter)
 
 	prWifiVar->fgSapChannelSwitchPolicy = (uint32_t) wlanCfgGetUint32(
 		prAdapter, "SapChannelSwitchPolicy",
-		P2P_CHANNEL_SWITCH_POLICY_SCC);
+		P2P_CHANNEL_SWITCH_POLICY_SKIP_DFS_USER); //MOTO IKSWT-58657 avoid starting SAP on DFS channels
 
 	prWifiVar->fgSapConcurrencyPolicy = (uint32_t) wlanCfgGetUint32(
 		prAdapter, "SapConcurrencyPolicy",
@@ -8324,7 +8374,24 @@ void wlanInitFeatureOption(IN struct ADAPTER *prAdapter)
 	prWifiVar->fgEnOnlyScan6g = (uint8_t) wlanCfgGetUint32(
 		prAdapter, "EnableOnlyScan6g", FEATURE_DISABLED);
 #endif /* CFG_SUPPORT_LIMITED_PKT_PID */
-
+#if CFG_SUPPORT_802_11V_BTM_OFFLOAD
+	prWifiVar->fgAggressiveLoadBanalancing = (uint8_t) wlanCfgGetUint32(
+		prAdapter, "AggressiveLoadBanalancing", FEATURE_DISABLED);
+	prWifiVar->u2DisallowBtmTimeout = (uint16_t) wlanCfgGetUint32(
+		prAdapter, "DisallowBtmTimeout", 1800);
+	prWifiVar->u2ConsecutiveBtmReqTimeout = (uint16_t) wlanCfgGetUint32(
+		prAdapter, "ConsecutiveBtmReqTimeout", 300);
+	prWifiVar->ucConsecutiveBtmReqNum = (uint8_t) wlanCfgGetUint32(
+		prAdapter, "ConsecutiveBtmReqNum", 3);
+	prWifiVar->u2DisallowPerTimeout = (uint16_t) wlanCfgGetUint32(
+		prAdapter, "DisallowPerTimeout", 1800);
+	prWifiVar->u2ConsecutivePerReqTimeout = (uint16_t) wlanCfgGetUint32(
+		prAdapter, "ConsecutivePerReqTimeout", 300);
+	prWifiVar->ucConsecutivePerReqNum = (uint8_t) wlanCfgGetUint32(
+		prAdapter, "ConsecutivePerReqNum", 2);
+	prWifiVar->ucBTMOffloadEnabled = (uint8_t) wlanCfgGetUint32(
+		prAdapter, "BTMOffloadEnable", FEATURE_ENABLED);
+#endif
 }
 
 void wlanCfgSetSwCtrl(IN struct ADAPTER *prAdapter)
@@ -10472,6 +10539,7 @@ void wlanUpdateTxStatistics(IN struct ADAPTER *prAdapter,
 	enum ENUM_WMM_ACI eAci = WMM_AC_BE_INDEX;
 	struct QUE_MGT *prQM = &prAdapter->rQM;
 	OS_SYSTIME rCurTime;
+	struct WIFI_WMM_AC_STAT *prAcStats;
 
 	eAci = aucTid2ACI[prMsduInfo->ucUserPriority];
 
@@ -10488,11 +10556,13 @@ void wlanUpdateTxStatistics(IN struct ADAPTER *prAdapter,
 			prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter,
 						  prMsduInfo->ucBssIndex);
 
-			if (fgTxDrop)
-				prBssInfo->arLinkStatistics[eAci].
-					u4TxDropMsdu++;
-			else
-				prBssInfo->arLinkStatistics[eAci].u4TxMsdu++;
+			if (prBssInfo) {
+				prAcStats = &prBssInfo->arLinkStatistics[eAci];
+				if (fgTxDrop)
+					prAcStats->u4TxDropMsdu++;
+				else
+					prAcStats->u4TxMsdu++;
+			}
 		}
 	}
 

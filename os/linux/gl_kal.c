@@ -298,7 +298,11 @@ static uint8_t *apucCr4FwName[] = {
 /*----------------------------------------------------------------------------*/
 void tracing_mark_write(const char *fmt, ...)
 {
+#if IS_ENABLED(CONFIG_ARM64)
 #define __BUFFER_SIZE 1024
+#else
+#define __BUFFER_SIZE 768
+#endif
 	va_list ap;
 	char buf[__BUFFER_SIZE];
 
@@ -954,9 +958,12 @@ void *kalPacketAlloc(IN struct GLUE_INFO *prGlueInfo,
 	uint32_t u4TxHeadRoomSize;
 
 	prChipInfo = prGlueInfo->prAdapter->chip_info;
+#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
+	u4TxHeadRoomSize = CFG_RADIOTAP_HEADROOM;
+#else
 	u4TxHeadRoomSize = NIC_TX_DESC_AND_PADDING_LENGTH +
 			   prChipInfo->txd_append_size;
-
+#endif
 	if (in_interrupt())
 		prSkb = __dev_alloc_skb(u4Size + u4TxHeadRoomSize,
 					GFP_ATOMIC | __GFP_NOWARN);
@@ -1184,6 +1191,18 @@ uint32_t kal_is_skb_gro(struct ADAPTER *prAdapter, uint8_t ucBssIdx)
 	return 0;
 }
 
+uint32_t kal_is_udp_enable_gro(struct ADAPTER *prAdapter, uint8_t ucBssIdx)
+{
+	struct PERF_MONITOR *prPerMonitor;
+	struct WIFI_VAR *prWifiVar = &prAdapter->rWifiVar;
+
+	prPerMonitor = &prAdapter->rPerMonitor;
+	if (prPerMonitor->ulRxTp[ucBssIdx] > prWifiVar->u4UdpEnableGroTputTh)
+		return 1;
+
+	return 0;
+}
+
 static inline void napi_gro_flush_list(struct napi_struct *napi)
 {
 	napi_gro_flush(napi, false);
@@ -1274,6 +1293,7 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 	struct sk_buff *prSkb = NULL;
 	struct mt66xx_chip_info *prChipInfo;
 	uint8_t ucBssIdx;
+	struct WIFI_VAR *prWifiVar;
 #if CFG_SUPPORT_RX_GRO
 	struct NETDEV_PRIVATE_GLUE_INFO *prNetDevPrivate = NULL;
 #endif
@@ -1283,6 +1303,7 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 
 	prSkb = pvPkt;
 	prChipInfo = prGlueInfo->prAdapter->chip_info;
+	prWifiVar = &prGlueInfo->prAdapter->rWifiVar;
 	ucBssIdx = GLUE_GET_PKT_BSS_IDX(prSkb);
 	RX_INC_CNT(&prGlueInfo->prAdapter->rRxCtrl, RX_DATA_INDICATION_COUNT);
 #if DBG && 0
@@ -1315,10 +1336,7 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 	}
 	if (!prNetDev)
 		prNetDev = prGlueInfo->prDevHandler;
-#if CFG_SUPPORT_SNIFFER
-	if (prGlueInfo->fgIsEnableMon)
-		prNetDev = prGlueInfo->prMonDevHandler;
-#endif
+
 	if (prNetDev->dev_addr == NULL) {
 		DBGLOG(RX, WARN, "dev_addr == NULL\n");
 		return WLAN_STATUS_FAILURE;
@@ -1376,7 +1394,7 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 	prNetDev->last_rx = jiffies;
 #endif
 
-#if CFG_SUPPORT_SNIFFER
+#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
 	if (prGlueInfo->fgIsEnableMon) {
 		skb_reset_mac_header(prSkb);
 		prSkb->ip_summed = CHECKSUM_UNNECESSARY;
@@ -1440,6 +1458,16 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 	kalTraceEvent("Rx ipid=0x%04x", GLUE_GET_PKT_IP_ID(prSkb));
 
 #if CFG_SUPPORT_RX_GRO
+/* Disable UDP GRO for kernel [4.19,5.10) due to kernel bug */
+#if KERNEL_VERSION(4, 19, 0) <= CFG80211_VERSION_CODE
+#if KERNEL_VERSION(5, 10, 0) > CFG80211_VERSION_CODE
+	if (GLUE_TEST_PKT_FLAG(prSkb, ENUM_PKT_UDP)
+		&& ucBssIdx < MAX_BSSID_NUM
+		&& !kal_is_udp_enable_gro(prGlueInfo->prAdapter, ucBssIdx))
+		goto skip_gro;
+#endif
+#endif
+
 	if (ucBssIdx < MAX_BSSID_NUM &&
 		kal_is_skb_gro(prGlueInfo->prAdapter, ucBssIdx)) {
 		/* GRO receive function can't be interrupt so it need to
@@ -1456,6 +1484,13 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 		DBGLOG_LIMITED(INIT, TRACE, "napi_gro_receive:%p\n", prNetDev);
 		return WLAN_STATUS_SUCCESS;
 	}
+#endif
+
+/* Disable UDP GRO for kernel [4.19,5.10) due to kernel bug */
+#if KERNEL_VERSION(4, 19, 0) <= CFG80211_VERSION_CODE
+#if KERNEL_VERSION(5, 10, 0) > CFG80211_VERSION_CODE
+skip_gro:
+#endif
 #endif
 	if (!in_interrupt())
 		netif_rx_ni(prSkb);
@@ -2237,6 +2272,16 @@ kalIndicateStatusAndComplete(IN struct GLUE_INFO
 				prConnSettings->u4RspIeLength,
 				WLAN_STATUS_AUTH_TIMEOUT,
 				GFP_KERNEL);
+
+		prFtIEs = aisGetFtIe(prAdapter, ucBssIndex);
+		if (prFtIEs) {
+			kalMemFree(prFtIEs->pucIEBuf,
+				VIR_MEM_TYPE,
+				prFtIEs->u4IeLength);
+			kalMemZero(prFtIEs,
+				sizeof(*prFtIEs));
+		}
+
 		kalSetMediaStateIndicated(prGlueInfo,
 			MEDIA_STATE_DISCONNECTED,
 			ucBssIndex);
@@ -8006,7 +8051,10 @@ inline int32_t kalPerMonStart(IN struct GLUE_INFO
 			      *prGlueInfo)
 {
 	struct PERF_MONITOR *prPerMonitor;
-
+#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
+	if (prGlueInfo->fgIsEnableMon)
+		return 0;
+#endif
 	prPerMonitor = &prGlueInfo->prAdapter->rPerMonitor;
 	DBGLOG(SW4, TEMP, "enter %s\n", __func__);
 
@@ -8132,7 +8180,11 @@ static uint32_t kalPerMonUpdate(IN struct ADAPTER *prAdapter)
 	for (i = 0; i < BSS_DEFAULT_NUM; i++) {
 		ndev = wlanGetNetDev(glue, i);
 		bss = GET_BSS_INFO_BY_INDEX(prAdapter, i);
-		if (IS_BSS_ALIVE(prAdapter, bss) && ndev) {
+		if (ndev && (IS_BSS_ALIVE(prAdapter, bss)
+#ifdef CFG_SUPPORT_SNIFFER_RADIOTAP
+			|| glue->fgIsEnableMon
+#endif /* CFG_SUPPORT_SNIFFER_RADIOTAP */
+		)) {
 			currentTxBytes = ndev->stats.tx_bytes;
 			currentRxBytes = ndev->stats.rx_bytes;
 			currentTxPkts = ndev->stats.tx_packets;
@@ -8162,14 +8214,9 @@ static uint32_t kalPerMonUpdate(IN struct ADAPTER *prAdapter)
 		if (txDiffBytes[i] < 0 || rxDiffBytes[i] < 0) {
 			/* overflow should not happen */
 			DBGLOG(SW4, WARN,
-				"[%d]wrong bytes: tx[%llu][%lld][%lld], rx[%llu][%lld][%lld],\n",
-				i,
-				(unsigned long long) currentTxBytes,
-				(long long) lastTxBytes,
-				(long long) txDiffBytes[i],
-				(unsigned long long) currentRxBytes,
-				(long long) lastRxBytes,
-				(long long) rxDiffBytes[i]);
+				"[%d]wrong bytes: tx[%lu][%lu][%ld], rx[%lu][%lu][%ld],\n",
+				i, currentTxBytes, lastTxBytes, txDiffBytes[i],
+				currentRxBytes, lastRxBytes, rxDiffBytes[i]);
 			goto fail;
 		}
 
@@ -8247,6 +8294,7 @@ static uint32_t kalPerMonUpdate(IN struct ADAPTER *prAdapter)
 #define TEMP_LOG_TEMPLATE \
 	"<%dms> Tput: %llu(%llu.%03llumbps) %s Pending:%d/%d %s Used:" \
 	"%u/%d/%d %s LQ[%llu:%llu:%llu] lv:%u th:%u fg:0x%lx" \
+	" Mo:[%u:%lu:%lu:%lu]" \
 	" TxDp[ST:BS:FO:QM:DP]:%u:%u:%u:%u:%u\n"
 
 	DBGLOG(SW4, INFO, TEMP_LOG_TEMPLATE,
@@ -8263,6 +8311,11 @@ static uint32_t kalPerMonUpdate(IN struct ADAPTER *prAdapter)
 		perf->u4CurrPerfLevel,
 		prAdapter->rWifiVar.u4BoostCpuTh,
 		perf->ulPerfMonFlag,
+		glue->fgIsEnableMon,
+		RX_GET_CNT(&prAdapter->rRxCtrl, RX_SNIFFER_LOG_COUNT),
+		RX_GET_CNT(&prAdapter->rRxCtrl, RX_PDMA_SCATTER_DATA_COUNT),
+		RX_GET_CNT(&prAdapter->rRxCtrl,
+			RX_PDMA_SCATTER_INDICATION_COUNT),
 		TX_GET_CNT(&prAdapter->rTxCtrl, TX_INACTIVE_STA_DROP),
 		TX_GET_CNT(&prAdapter->rTxCtrl, TX_INACTIVE_BSS_DROP),
 		TX_GET_CNT(&prAdapter->rTxCtrl, TX_FORWARD_OVERFLOW_DROP),

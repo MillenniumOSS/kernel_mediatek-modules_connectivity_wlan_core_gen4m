@@ -2264,7 +2264,6 @@ void aisFsmSteps(IN struct ADAPTER *prAdapter,
 			 * is triggered by Driver
 			*/
 			prScanRequest->u4Flags = 0;
-
 			break;
 
 		case AIS_STATE_REQ_CHANNEL_JOIN:
@@ -2591,7 +2590,9 @@ void aisFsmQueryCandidates(IN struct ADAPTER *prAdapter, uint8_t ucBssIndex)
 		    BIT(RRM_CAP_INFO_NEIGHBOR_REPORT_BIT))
 			aisSendNeighborRequest(prAdapter, ucBssIndex);
 #if CFG_SUPPORT_802_11V_BTM_OFFLOAD
-		else if (prStaRec && prStaRec->fgSupportBTM)
+		else if (prStaRec && prStaRec->fgSupportBTM &&
+			IS_FEATURE_ENABLED(
+			prAdapter->rWifiVar.fgAggressiveLoadBanalancing))
 			wnmSendBTMQueryFrame(prAdapter,
 				prStaRec, BSS_TRANSITION_LOAD_BALANCING);
 #endif
@@ -3827,6 +3828,12 @@ void aisFsmDisconnectedAction(IN struct ADAPTER *prAdapter, uint8_t ucBssIndex)
 		struct BSS_DESC) {
 		prBssDesc->fgQueriedCandidates = FALSE;
 	}
+#if CFG_SUPPORT_802_11V_BTM_OFFLOAD
+	kalMemZero(&prRoamingFsmInfo->rSkipBtmInfo,
+		sizeof(struct ROAMING_SKIP_BTM));
+	kalMemZero(&prRoamingFsmInfo->rSkipPerInfo,
+		sizeof(struct ROAMING_SKIP_PER));
+#endif
 #endif
 }
 
@@ -5507,10 +5514,14 @@ void aisFsmRunEventRoamingDiscovery(IN struct ADAPTER *prAdapter,
 {
 	struct AIS_FSM_INFO *prAisFsmInfo;
 	struct CONNECTION_SETTINGS *prConnSettings;
+	struct ROAMING_INFO *prRoamingFsmInfo;
+	struct AIS_SPECIFIC_BSS_INFO *prAisSpecificBssInfo;
 	enum ENUM_AIS_REQUEST_TYPE eAisRequest = AIS_REQUEST_NUM;
 
 	prAisFsmInfo = aisGetAisFsmInfo(prAdapter, ucBssIndex);
 	prConnSettings = aisGetConnSettings(prAdapter, ucBssIndex);
+	prRoamingFsmInfo = aisGetRoamingInfo(prAdapter, ucBssIndex);
+	prAisSpecificBssInfo = aisGetAisSpecBssInfo(prAdapter, ucBssIndex);
 
 	/* search candidates by best rssi */
 	prConnSettings->eConnectionPolicy = CONNECT_BY_SSID_BEST_RSSI;
@@ -5537,6 +5548,49 @@ void aisFsmRunEventRoamingDiscovery(IN struct ADAPTER *prAdapter,
 #endif
 #endif
 
+#if CFG_SUPPORT_802_11V_BTM_OFFLOAD
+	/* Skip PER roaming to avoid ping-pong issue */
+	if (prAisSpecificBssInfo->rCurEssLink.u4NumElem == 2 &&
+		prRoamingFsmInfo->eReason == ROAMING_REASON_TX_ERR) {
+		OS_SYSTIME rCurrentTime;
+
+		GET_CURRENT_SYSTIME(&rCurrentTime);
+		if (prRoamingFsmInfo->rSkipPerInfo.rFrstPerTime == 0 ||
+			(prRoamingFsmInfo->fgDisallowPERRoaming &&
+			CHECK_FOR_TIMEOUT(rCurrentTime,
+			prRoamingFsmInfo->rSkipPerInfo.rFrstPerTime,
+			SEC_TO_SYSTIME(prAdapter->rWifiVar.
+				u2DisallowPerTimeout)))) {
+			kalMemZero(&prRoamingFsmInfo->rSkipPerInfo,
+				sizeof(struct ROAMING_SKIP_BTM));
+			GET_CURRENT_SYSTIME(
+				&(prRoamingFsmInfo->rSkipPerInfo.rFrstPerTime));
+			prRoamingFsmInfo->fgDisallowPERRoaming = FALSE;
+		} else if (prRoamingFsmInfo->rSkipPerInfo.rFrstPerTime != 0 &&
+			prRoamingFsmInfo->fgDisallowPERRoaming == FALSE &&
+			prRoamingFsmInfo->rSkipPerInfo.
+			ucConsecutivePerCount > 0 &&
+			CHECK_FOR_TIMEOUT(rCurrentTime,
+			prRoamingFsmInfo->rSkipPerInfo.rFrstPerTime,
+			SEC_TO_SYSTIME(prAdapter->rWifiVar.
+				u2ConsecutivePerReqTimeout))) {
+			prRoamingFsmInfo->rSkipPerInfo.ucConsecutivePerCount--;
+			GET_CURRENT_SYSTIME(
+				&(prRoamingFsmInfo->rSkipPerInfo.rFrstPerTime));
+		} else if (prRoamingFsmInfo->rSkipPerInfo.ucConsecutivePerCount
+			>= prAdapter->rWifiVar.ucConsecutivePerReqNum) {
+			DBGLOG(ROAMING, INFO,
+			       "Don't req PER roam - consecutive PER\n");
+			prRoamingFsmInfo->fgDisallowPERRoaming = TRUE;
+			roamingFsmRunEventRoam(prAdapter, ucBssIndex);
+			roamingFsmRunEventFail(prAdapter,
+					       ROAMING_FAIL_REASON_NOCANDIDATE,
+					       ucBssIndex);
+			return;
+		}
+		prRoamingFsmInfo->rSkipPerInfo.ucConsecutivePerCount++;
+	}
+#endif
 	/* results are still new */
 	if (!u4ReqScan) {
 		roamingFsmRunEventRoam(prAdapter, ucBssIndex);
@@ -6768,9 +6822,50 @@ void aisFsmRunEventBssTransition(IN struct ADAPTER *prAdapter,
 	    prAisSpecificBssInfo->ucCurEssChnlInfoNum *
 	    prBssDesc->u2BeaconInterval)
 		prRoamingFsmInfo->eReason = ROAMING_REASON_BTM_DISASSOC;
+	else if (ucRequestMode & WNM_BSS_TM_REQ_BSS_TERMINATION_INCLUDED &&
+		 prBtmParam->u2TermDuration != 0)
+		prRoamingFsmInfo->eReason = ROAMING_REASON_BTM_DISASSOC;
 	else
 		prRoamingFsmInfo->eReason = ROAMING_REASON_BTM;
 
+#if CFG_SUPPORT_802_11V_BTM_OFFLOAD
+	/* Skip BTM roaming to avoid ping-pong issue */
+	if (prAisSpecificBssInfo->rCurEssLink.u4NumElem == 2) {
+		OS_SYSTIME rCurrentTime;
+
+		GET_CURRENT_SYSTIME(&rCurrentTime);
+		if (prRoamingFsmInfo->rSkipBtmInfo.rFrstReqTime == 0 ||
+				(prRoamingFsmInfo->fgDisallowBtmRoaming &&
+				CHECK_FOR_TIMEOUT(rCurrentTime,
+				prRoamingFsmInfo->rSkipBtmInfo.rFrstReqTime,
+				SEC_TO_SYSTIME(prAdapter->rWifiVar.
+					u2DisallowBtmTimeout)))) {
+			kalMemZero(&prRoamingFsmInfo->rSkipBtmInfo,
+				sizeof(struct ROAMING_SKIP_BTM));
+			GET_CURRENT_SYSTIME(
+				&(prRoamingFsmInfo->rSkipBtmInfo.rFrstReqTime));
+			prRoamingFsmInfo->fgDisallowBtmRoaming = FALSE;
+		} else if (prRoamingFsmInfo->rSkipBtmInfo.rFrstReqTime != 0 &&
+			prRoamingFsmInfo->fgDisallowBtmRoaming == FALSE &&
+			prRoamingFsmInfo->rSkipBtmInfo.
+			ucConsecutiveBtmCount > 0 &&
+			CHECK_FOR_TIMEOUT(rCurrentTime,
+			prRoamingFsmInfo->rSkipBtmInfo.rFrstReqTime,
+			SEC_TO_SYSTIME(prAdapter->rWifiVar.
+				u2ConsecutiveBtmReqTimeout))) {
+			prRoamingFsmInfo->rSkipBtmInfo.ucConsecutiveBtmCount--;
+			GET_CURRENT_SYSTIME(
+				&(prRoamingFsmInfo->rSkipBtmInfo.rFrstReqTime));
+		} else if (prRoamingFsmInfo->rSkipBtmInfo.ucConsecutiveBtmCount
+			>= prAdapter->rWifiVar.ucConsecutiveBtmReqNum &&
+			prRoamingFsmInfo->eReason == ROAMING_REASON_BTM) {
+			DBGLOG(AIS, ERROR, "Btm req fail - consecutive btm");
+			prRoamingFsmInfo->fgDisallowBtmRoaming = TRUE;
+			goto send_response;
+		}
+		prRoamingFsmInfo->rSkipBtmInfo.ucConsecutiveBtmCount++;
+	}
+#endif
 	DBGLOG(AIS, INFO, "BTM req roam start\n");
 	roamingFsmSteps(prAdapter, ROAMING_STATE_DISCOVERY, ucBssIndex);
 
